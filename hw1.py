@@ -51,20 +51,57 @@ def image_data_url(path: Path) -> str:
     encoded = base64.b64encode(path.read_bytes()).decode("ascii")
     return f"data:{mime_type};base64,{encoded}"
 
-
 def build_chain() -> Any:
-    """Create and return your LangChain chain once.
-
-    Suggested imports:
-        from langchain_core.prompts import ChatPromptTemplate
-        from langchain_deepseek import ChatDeepSeek
-
-    Use the vision-capable DeepSeek Flash model named
-    ``deepseek-v4-flash-vision-exp``. The API key is loaded from .env.
-    """
-    ### YOUR CODE HERE
-    return None
-
+    """Create and return your LangChain chain once."""
+    import os
+    from langchain_core.prompts import ChatPromptTemplate
+    from langchain_deepseek import ChatDeepSeek
+    prompt = ChatPromptTemplate.from_messages(
+        [
+            (
+                "system",
+                """You are reading a supermarket receipt.
+Please extract two amounts from the receipt and return them as JSON.
+{{
+    "paid": 0.00,
+    "without_discount": 0.00
+}}
+For "paid", use the final amount actually paid on the receipt,
+after any rounding.
+For "without_discount", use the subtotal and add back all
+discounts, promotions, and coupons. Do not add back the
+rounding amount.
+Do not include the rounding amount in "without_discount".
+Return only the JSON object and no explanation.
+Both values should be numbers with two decimal places.
+For example:
+{{
+    "paid": 102.30,
+    "without_discount": 107.70
+}}
+""",
+            ),
+            (
+                "human",
+                [
+                    {
+                        "type": "text",
+                        "text": "Please read this receipt.",
+                    },
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": "{image_url}"},
+                    },
+                ],
+            ),
+        ]
+    )
+    model = ChatDeepSeek(
+        model="deepseek-v4-flash-vision-exp",
+        api_key=os.environ["DEEPSEEK_API_KEY"],
+        temperature=0,
+    )
+    return prompt | model
 
 def answer_queries(chain: Any, images: list[Path]) -> dict[str, Any]:
     """Run your chain and return one response for each exact query string.
@@ -78,13 +115,43 @@ def answer_queries(chain: Any, images: list[Path]) -> dict[str, Any]:
     multimodal human messages. LangChain's ``batch`` method is one simple way
     to process independent receipt-extraction prompts in parallel.
     """
-    ### YOUR CODE HERE
-    _ = (chain, images)
-    return {QUERY_1: DUMMY_RESPONSE, QUERY_2: DUMMY_RESPONSE}
+    import json
+    from decimal import Decimal
+    inputs = []
+
+    for image in images:
+        inputs.append(
+            {
+                "image_url": image_data_url(image),
+            }
+        )
+
+    results = chain.batch(inputs)
+    total_paid = Decimal("0")
+    total_without_discount = Decimal("0")
+    for result in results:
+        text = response_text(result).strip()
+        if text.startswith("```"):
+            text = re.sub(r"^```(?:json)?", "", text).strip()
+            text = re.sub(r"```$", "", text).strip()
+        data = json.loads(text)
+        total_paid += Decimal(str(data["paid"]))
+        total_without_discount += Decimal(
+            str(data["without_discount"])
+        )
+
+    total_paid = total_paid.quantize(Decimal("0.01"))
+    total_without_discount = total_without_discount.quantize(
+        Decimal("0.01")
+    )
+    return {
+        QUERY_1: f"HK${total_paid:.2f}",
+        QUERY_2: f"HK${total_without_discount:.2f}",
+    }
+
 
 
 # Everything below is provided runner/scoring code. No edits are needed.
-
 _MONEY_RE = re.compile(
     r"(?<![\w.])(?:HK\$|\$)?\s*(-?\d[\d,]*(?:\.\d+)?)(?![\w.])",
     re.IGNORECASE,
